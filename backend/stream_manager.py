@@ -107,20 +107,30 @@ class StreamManager:
                 "-reconnect", "1",
                 "-reconnect_at_eof", "1",
                 "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "5",
-                "-timeout", "10000000",  # Longer timeout for network issues
-                "-analyzeduration", "2147483647",
-                "-probesize", "2147483647",
+                "-reconnect_delay_max", "2",  # Reduced for faster recovery
+                "-timeout", "5000000",  # Reduced timeout for faster error detection
+                "-analyzeduration", "1000000",  # Reduced for faster startup
+                "-probesize", "1000000",  # Reduced for faster startup
                 
                 # Input
                 "-i", source_url,
                 
-                # Video and audio codec settings
-                "-c:v", "copy",  # Copy video codec
-                "-c:a", "copy",  # Copy audio codec
+                # Buffer settings
+                "-fflags", "+genpts+igndts",  # Generate timestamps, ignore input timestamps
+                "-flags", "low_delay",  # Minimize latency
                 
-                # Output format and HLS settings
+                # Video settings
+                "-c:v", "copy",  # Copy video codec
+                "-max_muxing_queue_size", "1024",  # Prevent muxing queue overflow
+                "-vsync", "1",  # Maintain AV sync
+                
+                # Audio settings
+                "-c:a", "copy",  # Copy audio codec
+                "-af", "aresample=async=1:min_hard_comp=0.100000",  # Handle audio sync issues
+                
+                # Output format settings
                 "-f", "flv",  # Output to RTMP/FLV format
+                "-flvflags", "no_duration_filesize",  # Better for live streaming
                 
                 # Error handling
                 "-err_detect", "ignore_err",
@@ -171,14 +181,20 @@ class StreamManager:
                         "-reconnect", "1",
                         "-reconnect_at_eof", "1",
                         "-reconnect_streamed", "1",
-                        "-reconnect_delay_max", "5",
-                        "-timeout", "10000000",
-                        "-analyzeduration", "2147483647",
-                        "-probesize", "2147483647",
+                        "-reconnect_delay_max", "2",
+                        "-timeout", "5000000",
+                        "-analyzeduration", "1000000",
+                        "-probesize", "1000000",
                         "-i", source_url,
+                        "-fflags", "+genpts+igndts",
+                        "-flags", "low_delay",
                         "-c:v", "copy",
+                        "-max_muxing_queue_size", "1024",
+                        "-vsync", "1",
                         "-c:a", "copy",
+                        "-af", "aresample=async=1:min_hard_comp=0.100000",
                         "-f", "flv",
+                        "-flvflags", "no_duration_filesize",
                         "-err_detect", "ignore_err",
                         rtmp_output
                     ]

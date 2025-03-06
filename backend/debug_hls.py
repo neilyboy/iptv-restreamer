@@ -22,7 +22,7 @@ logger = logging.getLogger("hls_debug")
 
 # Constants
 HLS_DIR = "/tmp/hls"
-NGINX_HLS_URL = "http://nginx-rtmp:8000/hls"
+NGINX_HLS_URL = "http://nginx-rtmp:8088/hls"  # Updated port to match container configuration
 EXTERNAL_HLS_URL = "http://localhost:8088/hls"
 
 def check_directory_structure():
