@@ -3,23 +3,28 @@
 echo "Starting nginx-rtmp server..."
 echo "Ensuring HLS directory exists and has proper permissions..."
 
+# Clean up any existing HLS files
+rm -rf /tmp/hls/*
+
 # Create HLS directory and set permissions
 mkdir -p /tmp/hls
 chmod -R 777 /tmp/hls
 chown -R nobody:nogroup /tmp/hls
 
-# Create subdirectories for better organization
-mkdir -p /tmp/hls/live
-chmod -R 777 /tmp/hls/live
-chown -R nobody:nogroup /tmp/hls/live
+# Create test files to verify permissions and HLS functionality
+cat > /tmp/hls/test.m3u8 << EOF
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:4
+#EXTINF:4.0,
+test.ts
+#EXT-X-ENDLIST
+EOF
 
-# Create a test file to verify permissions
-echo "#EXTM3U\n#EXT-X-VERSION:3" > /tmp/hls/test.m3u8
 dd if=/dev/zero of=/tmp/hls/test.ts bs=1024 count=10
 
 echo "HLS directory setup complete. Contents:"
 ls -la /tmp/hls
-ls -la /tmp/hls/live
 
 # Enable nginx debug logging
 export NGINX_ENTRYPOINT_QUIET_LOGS=""
