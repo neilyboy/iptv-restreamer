@@ -1,0 +1,78 @@
+services:
+  # Frontend web interface
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - iptv-network
+    restart: unless-stopped
+    environment:
+      - REACT_APP_API_URL=https://192.168.1.113:8000/api
+      - REACT_APP_HLS_URL=http://192.168.1.113:8088/hls
+
+  # Backend API and process manager
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8080"  # Map host port 8000 to container port 8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - hls_data:/tmp/hls  # Using named volume for HLS data
+    depends_on:
+      nginx-rtmp:
+        condition: service_healthy  # Ensure nginx-rtmp is healthy before starting backend
+      db:
+        condition: service_started
+    networks:
+      - iptv-network
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://iptv:iptv_password@db:5432/iptv_streams
+      - RTMP_SERVER_URL=rtmp://nginx-rtmp:1935/live
+      - HLS_SERVER_URL=http://192.168.1.113:8088/hls
+
+  # Media server (Nginx with RTMP module)
+  nginx-rtmp:
+    build:
+      context: ./nginx-rtmp
+    ports:
+      - "8088:8088"  # Map HLS port to 8088
+      - "1935:1935"  # RTMP port
+    volumes:
+      - hls_data:/tmp/hls  # Using named volume for HLS data
+    networks:
+      - iptv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # Database for storing stream configurations
+  db:
+    image: postgres:13-alpine
+    environment:
+      POSTGRES_USER: iptv
+      POSTGRES_PASSWORD: iptv_password
+      POSTGRES_DB: iptv_streams
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - iptv-network
+    restart: unless-stopped
+
+networks:
+  iptv-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  hls_data:
+    driver: local
