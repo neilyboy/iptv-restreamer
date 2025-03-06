@@ -17,6 +17,7 @@ class StreamManager:
         self.hls_server_url = hls_server_url
         self.active_streams: Dict[str, subprocess.Popen] = {}
         self.hls_dir = "/tmp/hls"
+        self.hls_live_dir = "/tmp/hls/live"
         
         # Ensure HLS directory exists with proper permissions
         self._ensure_hls_directory()
@@ -24,12 +25,19 @@ class StreamManager:
     def _ensure_hls_directory(self):
         """Ensure the HLS directory exists and has proper permissions."""
         try:
+            # Create main HLS directory
             if not os.path.exists(self.hls_dir):
                 logger.info(f"Creating HLS directory: {self.hls_dir}")
                 os.makedirs(self.hls_dir, exist_ok=True)
+            
+            # Create live subdirectory
+            if not os.path.exists(self.hls_live_dir):
+                logger.info(f"Creating HLS live directory: {self.hls_live_dir}")
+                os.makedirs(self.hls_live_dir, exist_ok=True)
                 
-            # Set permissions to ensure all containers can write to the directory
+            # Set permissions to ensure all containers can write to the directories
             os.chmod(self.hls_dir, 0o777)
+            os.chmod(self.hls_live_dir, 0o777)
             
             # Create a test file to verify write access
             test_file_path = os.path.join(self.hls_dir, "stream_manager_test.txt")
@@ -39,14 +47,15 @@ class StreamManager:
             logger.info(f"HLS directory setup complete: {self.hls_dir}")
             logger.info(f"Test file created: {test_file_path}")
             
-            # List all files in the directory for debugging
+            # List all files in both directories for debugging
             files = os.listdir(self.hls_dir)
+            live_files = os.listdir(self.hls_live_dir) if os.path.exists(self.hls_live_dir) else []
             logger.info(f"Files in HLS directory: {files}")
+            logger.info(f"Files in HLS live directory: {live_files}")
             
         except Exception as e:
             logger.error(f"Error setting up HLS directory: {str(e)}")
-            # Continue execution even if there's an error, as nginx-rtmp might handle it
-    
+            
     def start_stream(self, db: Session, stream_id: int) -> bool:
         """
         Start a new stream with the given ID from the database.
@@ -136,11 +145,25 @@ class StreamManager:
                 ffmpeg_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                universal_newlines=True,
+                bufsize=1
             )
             
             # Store the process
             self.active_streams[stream_id_str] = process
+            
+            # Start a thread to continuously read and log FFmpeg output
+            def log_output():
+                while True:
+                    line = process.stderr.readline()
+                    if not line and process.poll() is not None:
+                        break
+                    if line:
+                        logger.info(f"FFmpeg output: {line.strip()}")
+            
+            import threading
+            log_thread = threading.Thread(target=log_output, daemon=True)
+            log_thread.start()
             
             # Wait a moment to see if the process crashes immediately
             time.sleep(2)
@@ -190,11 +213,25 @@ class StreamManager:
                         ffmpeg_cmd,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
-                        text=True
+                        universal_newlines=True,
+                        bufsize=1
                     )
                     
                     # Update the stored process
                     self.active_streams[stream_id_str] = process
+                    
+                    # Start a thread to continuously read and log FFmpeg output
+                    def log_output():
+                        while True:
+                            line = process.stderr.readline()
+                            if not line and process.poll() is not None:
+                                break
+                            if line:
+                                logger.info(f"FFmpeg output: {line.strip()}")
+                    
+                    import threading
+                    log_thread = threading.Thread(target=log_output, daemon=True)
+                    log_thread.start()
                     
                     # Wait again to see if it crashes
                     time.sleep(2)
@@ -268,7 +305,7 @@ class StreamManager:
                     return
                     
                 # Check if HLS files exist
-                hls_exists = self._verify_hls_files(stream_id_str, max_attempts=1)
+                hls_exists = self.check_hls_files(stream_id_str, attempts=1)
                 
                 if hls_exists:
                     logger.info(f"HLS files confirmed for stream {stream_id}")
@@ -280,43 +317,51 @@ class StreamManager:
         except Exception as e:
             logger.error(f"Error monitoring HLS files for stream {stream_id}: {str(e)}")
     
-    def _verify_hls_files(self, stream_id: str, max_attempts: int = 10) -> bool:
-        """
-        Verify that HLS files are being generated for the given stream ID.
-        Returns True if files are found, False otherwise.
-        """
-        # Check for different possible file patterns
-        file_patterns = [
-            f"{self.hls_dir}/stream_{stream_id}.m3u8",  # Our direct FFmpeg output
-            f"{self.hls_dir}/{stream_id}.m3u8",         # Nginx-RTMP generated
-            f"{self.hls_dir}/stream_{stream_id}_*.ts",  # Our TS segments
-            f"{self.hls_dir}/{stream_id}_*.ts"          # Nginx-RTMP TS segments
-        ]
-        
-        for attempt in range(max_attempts):
-            logger.info(f"Checking for HLS files (attempt {attempt+1}/{max_attempts})")
+    def _cleanup_hls_files(self, stream_id: str):
+        """Clean up any existing HLS files for a stream."""
+        try:
+            # Clean up files in both main and live directories
+            patterns = [
+                os.path.join(self.hls_dir, f"{stream_id}*.m3u8"),
+                os.path.join(self.hls_dir, f"{stream_id}*.ts"),
+                os.path.join(self.hls_live_dir, f"{stream_id}*.m3u8"),
+                os.path.join(self.hls_live_dir, f"{stream_id}*.ts")
+            ]
             
-            found_files = []
-            for pattern in file_patterns:
-                matching_files = glob.glob(pattern)
-                if matching_files:
-                    found_files.extend(matching_files)
+            for pattern in patterns:
+                for file in glob.glob(pattern):
+                    try:
+                        os.remove(file)
+                        logger.info(f"Removed HLS file: {file}")
+                    except Exception as e:
+                        logger.warning(f"Failed to remove file {file}: {str(e)}")
+                        
+        except Exception as e:
+            logger.error(f"Error cleaning up HLS files: {str(e)}")
             
-            if found_files:
-                logger.info(f"Found HLS files: {found_files}")
+    def check_hls_files(self, stream_id: str, attempts: int = 1) -> bool:
+        """Check if HLS files exist for a stream."""
+        for attempt in range(attempts):
+            logger.info(f"Checking for HLS files (attempt {attempt + 1}/{attempts})")
+            
+            # List all files in both directories
+            all_files = os.listdir(self.hls_dir)
+            live_files = os.listdir(self.hls_live_dir) if os.path.exists(self.hls_live_dir) else []
+            
+            logger.info(f"All files in HLS directory: {all_files}")
+            logger.info(f"All files in HLS live directory: {live_files}")
+            
+            # Check for files in both directories
+            main_m3u8 = os.path.join(self.hls_dir, f"{stream_id}.m3u8")
+            live_m3u8 = os.path.join(self.hls_live_dir, f"{stream_id}.m3u8")
+            
+            if os.path.exists(main_m3u8) or os.path.exists(live_m3u8):
                 return True
-                    
-            # List all files in the directory for debugging
-            try:
-                all_files = os.listdir(self.hls_dir)
-                logger.info(f"All files in HLS directory: {all_files}")
-            except Exception as e:
-                logger.error(f"Error listing HLS directory: {str(e)}")
                 
-            # Wait before next attempt
-            time.sleep(2)
-        
-        logger.warning(f"No HLS files found for stream {stream_id} after {max_attempts} attempts")
+            if attempt < attempts - 1:
+                time.sleep(2)
+                
+        logger.warning(f"No HLS files found for stream {stream_id} after {attempts} attempts")
         return False
     
     def stop_stream(self, db: Session, stream_id: int) -> bool:
@@ -378,27 +423,6 @@ class StreamManager:
             logger.error(f"Error stopping stream {stream_id}: {str(e)}")
             return False
     
-    def _cleanup_hls_files(self, stream_id: str) -> None:
-        """Clean up HLS files for the given stream ID."""
-        try:
-            # Use glob to find all matching files
-            file_patterns = [
-                f"{self.hls_dir}/stream_{stream_id}.m3u8",
-                f"{self.hls_dir}/{stream_id}.m3u8",
-                f"{self.hls_dir}/stream_{stream_id}_*.ts",
-                f"{self.hls_dir}/{stream_id}_*.ts"
-            ]
-            
-            for pattern in file_patterns:
-                for file_path in glob.glob(pattern):
-                    logger.info(f"Removing HLS file: {file_path}")
-                    try:
-                        os.remove(file_path)
-                    except Exception as e:
-                        logger.error(f"Error removing file {file_path}: {str(e)}")
-        except Exception as e:
-            logger.error(f"Error cleaning up HLS files for stream {stream_id}: {str(e)}")
-    
     def get_active_streams(self, db: Optional[Session] = None) -> List[str]:
         """Get a list of active stream IDs."""
         return list(self.active_streams.keys())
@@ -438,21 +462,20 @@ class StreamManager:
                 
             # Check for HLS files using glob patterns
             file_patterns = [
-                f"{self.hls_dir}/stream_{stream_id_str}.m3u8",
-                f"{self.hls_dir}/{stream_id_str}.m3u8"
+                os.path.join(self.hls_dir, f"{stream_id_str}.m3u8"),
+                os.path.join(self.hls_live_dir, f"{stream_id_str}.m3u8")
             ]
             
             hls_file_path = None
             for pattern in file_patterns:
-                matching_files = glob.glob(pattern)
-                if matching_files:
-                    hls_file_path = matching_files[0]
+                if os.path.exists(pattern):
+                    hls_file_path = pattern
                     break
             
             # Check for TS segments
             ts_patterns = [
-                f"{self.hls_dir}/stream_{stream_id_str}_*.ts",
-                f"{self.hls_dir}/{stream_id_str}_*.ts"
+                os.path.join(self.hls_dir, f"{stream_id_str}_*.ts"),
+                os.path.join(self.hls_live_dir, f"{stream_id_str}_*.ts")
             ]
             
             ts_files = []
